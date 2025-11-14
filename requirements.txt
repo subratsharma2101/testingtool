@@ -1,0 +1,11 @@
+Flask==3.0.0
+selenium==4.25.0
+webdriver-manager==4.0.1
+flask-cors==4.0.0
+python-dotenv==1.0.0
+Werkzeug==3.0.1
+
+# For Excel report export
+openpyxl==3.1.2
+
+
