@@ -14,12 +14,6 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import base64
 
-# Fix encoding for Windows console
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
 class TestExecutor:
     def __init__(self, website_url: str, login_id: str = "", password: str = "", headed: bool = True):
         self.website_url = website_url
@@ -40,6 +34,7 @@ class TestExecutor:
             'skipped': 0,
             'execution_time': 0
         }
+        self.max_retries = 1
     
     def initialize_driver(self):
         """Initialize Chrome WebDriver"""
@@ -52,11 +47,15 @@ class TestExecutor:
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+        chrome_options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})
+        chrome_options.add_argument('--remote-allow-origins=*')
         if not self.headed:
             try:
                 chrome_options.add_argument('--headless=new')
             except Exception:
                 chrome_options.add_argument('--headless')
+        else:
+            chrome_options.add_experimental_option('detach', True)
         
         # Prefer bundled chromedriver in repo, then cache, then auto-download
         repo_dir = os.path.dirname(os.path.abspath(__file__))
@@ -164,6 +163,7 @@ class TestExecutor:
             
             if result['status'] == 'FAIL':
                 result['screenshot'] = self.take_screenshot(test_id)
+                result['console_logs'] = self._capture_console_logs()
             
         except Exception as e:
             result['status'] = 'FAIL'
@@ -220,12 +220,18 @@ class TestExecutor:
                     result['status'] = 'PASS' if not login_success else 'FAIL'
                     if login_success:
                         result['error_message'] = 'Login should have failed with invalid credentials'
+            elif test_case.get('malicious_payload'):
+                success, message = self._handle_security_payload_test(test_case)
+                result['status'] = 'PASS' if success else 'FAIL'
+                if not success:
+                    result['error_message'] = message or 'Malicious payload was not rejected'
             
             execution_time = time.time() - start_time
             result['execution_time'] = round(execution_time, 2)
             
             if result['status'] == 'FAIL':
                 result['screenshot'] = self.take_screenshot(test_id)
+                result['console_logs'] = self._capture_console_logs()
             
         except Exception as e:
             result['status'] = 'FAIL'
@@ -323,6 +329,7 @@ class TestExecutor:
             
             if result['status'] == 'FAIL':
                 result['screenshot'] = self.take_screenshot(test_id)
+                result['console_logs'] = self._capture_console_logs()
             
         except Exception as e:
             result['status'] = 'FAIL'
@@ -422,12 +429,59 @@ class TestExecutor:
                     except:
                         result['status'] = 'FAIL'
                         result['error_message'] = f'Could not test input field: {field_name}'
+            elif test_type == 'table_validation':
+                table_meta = test_case.get('table', {})
+                table_id = table_meta.get('id')
+                try:
+                    if table_id:
+                        table = self.driver.find_element(By.ID, table_id)
+                    else:
+                        table = self.driver.find_element(By.TAG_NAME, "table")
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    expected_rows = table_meta.get('row_count', 1)
+                    threshold = max(1, min(expected_rows, 3))
+                    if len(rows) >= threshold:
+                        result['status'] = 'PASS'
+                    else:
+                        result['status'] = 'FAIL'
+                        result['error_message'] = 'Table rows missing'
+                except Exception as exc:
+                    result['status'] = 'FAIL'
+                    result['error_message'] = f'Table validation failed: {exc}'
+            elif test_type == 'iframe_validation':
+                iframe_meta = test_case.get('iframe', {})
+                try:
+                    iframe = None
+                    if iframe_meta.get('id'):
+                        iframe = self.driver.find_element(By.ID, iframe_meta['id'])
+                    elif iframe_meta.get('name'):
+                        iframe = self.driver.find_element(By.NAME, iframe_meta['name'])
+                    else:
+                        iframe = self.driver.find_element(By.TAG_NAME, "iframe")
+                    self.driver.switch_to.frame(iframe)
+                    time.sleep(1)
+                    # Verify iframe has content
+                    body = self.driver.find_element(By.TAG_NAME, "body")
+                    if body.text or body.get_attribute("innerHTML"):
+                        result['status'] = 'PASS'
+                    else:
+                        result['status'] = 'FAIL'
+                        result['error_message'] = 'Iframe loaded without content'
+                except Exception as exc:
+                    result['status'] = 'FAIL'
+                    result['error_message'] = f'Iframe validation failed: {exc}'
+                finally:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except Exception:
+                        pass
             
             execution_time = time.time() - start_time
             result['execution_time'] = round(execution_time, 2)
             
             if result['status'] == 'FAIL':
                 result['screenshot'] = self.take_screenshot(test_id)
+                result['console_logs'] = self._capture_console_logs()
             
         except Exception as e:
             result['status'] = 'FAIL'
@@ -479,6 +533,74 @@ class TestExecutor:
             return False
         except:
             return False
+
+    def _handle_security_payload_test(self, test_case: Dict) -> (bool, str):
+        """Attempt to submit malicious payloads and verify they are rejected."""
+        payload = test_case.get('malicious_payload', '')
+        field_name = test_case.get('field')
+        field_id = test_case.get('field_id')
+        try:
+            field = self._find_target_field(field_name, field_id)
+            if not field:
+                return False, 'Unable to locate target field'
+            field.clear()
+            field.send_keys(payload)
+
+            submit_btn = self._find_submit_button()
+            if submit_btn:
+                try:
+                    submit_btn.click()
+                except ElementNotInteractableException:
+                    pass
+                time.sleep(2)
+
+            page_source = self.driver.page_source.lower()
+            indicators = ['error', 'invalid', 'blocked', 'forbidden', 'denied', 'malicious']
+            if any(indicator in page_source for indicator in indicators):
+                return True, ''
+            return False, 'Payload did not trigger validation feedback'
+        except Exception as exc:
+            return False, str(exc)
+
+    def _find_target_field(self, field_name: Optional[str], field_id: Optional[str]):
+        """Locate an input or textarea based on stored metadata."""
+        try:
+            if field_id:
+                return self.driver.find_element(By.ID, field_id)
+        except NoSuchElementException:
+            pass
+
+        try:
+            if field_name:
+                return self.driver.find_element(By.NAME, field_name)
+        except NoSuchElementException:
+            pass
+
+        try:
+            if field_name:
+                return self.driver.find_element(By.CSS_SELECTOR, f"input[name='{field_name}'], textarea[name='{field_name}']")
+        except NoSuchElementException:
+            pass
+
+        return None
+
+    def _find_submit_button(self):
+        """Return the first submit capable element on the page."""
+        try:
+            return self.driver.find_element(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
+        except NoSuchElementException:
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            if buttons:
+                return buttons[0]
+        return None
+
+    def _capture_console_logs(self) -> List[Dict[str, Any]]:
+        """Fetch recent browser console logs."""
+        try:
+            logs = self.driver.get_log('browser')
+            return logs[-20:]
+        except Exception:
+            return []
     
     def _perform_login_with_invalid_credentials(self) -> bool:
         """Perform login with invalid credentials"""

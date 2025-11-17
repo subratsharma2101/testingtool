@@ -102,6 +102,134 @@
                 </div>
             </section>
 
+            <!-- Recording Section -->
+            <section class="recording-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-video"></i> Manual Recording Studio</h2>
+                        <p>Record real user flows in Chrome, generate editable Selenium scripts, and replay them anytime.</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="recording-controls">
+                            <div class="recording-buttons">
+                                <button type="button" class="btn btn-warning" id="startRecordingBtn">
+                                    <i class="fas fa-dot-circle"></i> Start Recording
+                                </button>
+                                <button type="button" class="btn btn-danger" id="stopRecordingBtn" disabled>
+                                    <i class="fas fa-stop-circle"></i> Stop & Save
+                                </button>
+                            </div>
+                            <div class="recording-status">
+                                <span id="recordingStatusChip" class="status-chip status-idle">
+                                    <i class="fas fa-circle"></i> Idle
+                                </span>
+                                <small>Recording opens a Chrome window. Interact manually—every action becomes a step.</small>
+                            </div>
+                        </div>
+                        <div class="recording-grid">
+                            <div class="recording-panel">
+                                <div class="panel-header">
+                                    <h3><i class="fas fa-list-ol"></i> Recorded Steps</h3>
+                                    <span id="recordedStepsCount" class="badge">0</span>
+                                </div>
+                                <div id="recordedStepsList" class="recording-list">
+                                    <p class="muted-text">No steps captured yet.</p>
+                                </div>
+                            </div>
+                            <div class="recording-panel">
+                                <div class="panel-header">
+                                    <h3><i class="fas fa-code"></i> Generated Script</h3>
+                                    <div class="script-actions">
+                                        <button type="button" class="btn btn-secondary btn-small" id="copyScriptBtn">
+                                            <i class="fas fa-copy"></i> Copy
+                                        </button>
+                                        <button type="button" class="btn btn-secondary btn-small" id="downloadScriptBtn">
+                                            <i class="fas fa-download"></i> Download
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea id="recordedScript" class="recording-script" placeholder="Script will appear here..." spellcheck="false"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- API Testing Section -->
+            <section class="api-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-plug"></i> API Testing Lab</h2>
+                        <p>Import an OpenAPI/Swagger document to auto-generate and execute API suites.</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="api_base_url">
+                                <i class="fas fa-link"></i> API Base URL
+                            </label>
+                            <input
+                                type="url"
+                                id="api_base_url"
+                                name="api_base_url"
+                                placeholder="https://api.example.com"
+                            >
+                        </div>
+                        <div class="form-group">
+                            <label for="apiSpecInput">
+                                <i class="fas fa-code"></i> OpenAPI / Swagger JSON
+                            </label>
+                            <textarea
+                                id="apiSpecInput"
+                                class="api-textarea"
+                                placeholder="Paste OpenAPI JSON here..."
+                                rows="8"
+                            ></textarea>
+                            <small class="muted-text align-left">
+                                Tip: paste the full specification or at least the paths section to generate rich test cases.
+                            </small>
+                        </div>
+                        <div class="form-actions api-actions">
+                            <button type="button" class="btn btn-primary" id="generateApiBtn">
+                                <i class="fas fa-flask"></i> Generate API Tests
+                            </button>
+                            <button type="button" class="btn btn-success" id="executeApiBtn" disabled>
+                                <i class="fas fa-play"></i> Execute API Tests
+                            </button>
+                            <button type="button" class="btn btn-secondary" id="clearApiBtn">
+                                <i class="fas fa-undo"></i> Clear
+                            </button>
+                        </div>
+                        <div class="api-downloads">
+                            <button type="button" class="btn btn-secondary btn-small" id="downloadApiReportBtn" disabled>
+                                <i class="fas fa-download"></i> Download Plan Report
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-small" id="downloadApiExecutionBtn" disabled>
+                                <i class="fas fa-file-alt"></i> Download Execution Report
+                            </button>
+                        </div>
+                        <div id="apiSummary" class="api-summary" style="display: none;">
+                            <div class="api-summary-grid">
+                                <div class="api-summary-item">
+                                    <span>Total Tests</span>
+                                    <strong id="apiTotalCount">0</strong>
+                                </div>
+                                <div class="api-summary-item positive">
+                                    <span>Positive</span>
+                                    <strong id="apiPositiveCount">0</strong>
+                                </div>
+                                <div class="api-summary-item negative">
+                                    <span>Negative</span>
+                                    <strong id="apiNegativeCount">0</strong>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="apiTestsList" class="api-tests-list">
+                            <p class="muted-text">API test cases will appear here after generation.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Loading Section -->
             <section class="loading-section" id="loadingSection" style="display: none;">
                 <div class="loading-card">
@@ -189,6 +317,12 @@
                         <button class="btn btn-download" id="downloadExcelBtn">
                             <i class="fas fa-file-excel"></i> Download Excel Report
                         </button>
+                    </div>
+                    <div class="history-card">
+                        <h3><i class="fas fa-history"></i> Recent Activity</h3>
+                        <div id="runHistoryList" class="history-list">
+                            <p class="muted-text align-left">No runs logged yet.</p>
+                        </div>
                     </div>
                 </div>
 

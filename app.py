@@ -5,9 +5,14 @@ import os
 from datetime import datetime
 from smart_test_engine import SmartTestEngine
 from test_executor import TestExecutor
+from recording_manager import RecordingManager
+from smart_api_engine import SmartApiEngine
+from api_test_executor import ApiTestExecutor
+from report_history import add_entry as log_history_entry, get_history as get_history_entries
 
 app = Flask(__name__)
 CORS(app)
+recording_manager = RecordingManager()
 
 # Configuration
 app.config['UPLOAD_FOLDER'] = 'reports'
@@ -48,7 +53,7 @@ def generate_tests():
         # Save report
         report_file = engine.save_report()
         
-        return jsonify({
+        response_payload = {
             'success': True,
             'test_cases': result,
             'report_file': report_file,
@@ -59,7 +64,14 @@ def generate_tests():
                 'ui': len(result.get('ui', [])),
                 'functional': len(result.get('functional', []))
             }
+        }
+        log_history_entry({
+            'type': 'ui_generation',
+            'website_url': website_url,
+            'summary': response_payload['summary'],
+            'report_file': report_file
         })
+        return jsonify(response_payload)
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -163,13 +175,21 @@ def execute_tests():
         report_file = executor.save_execution_report(website_url)
         excel_report_file = executor.save_execution_report_excel(website_url)
         
-        return jsonify({
+        response_payload = {
             'success': True,
             'results': execution_results['results'],
             'summary': execution_results['summary'],
             'report_file': report_file,
             'excel_report_file': excel_report_file
+        }
+        log_history_entry({
+            'type': 'ui_execution',
+            'website_url': website_url,
+            'summary': execution_results['summary'],
+            'report_file': report_file,
+            'excel_report_file': excel_report_file
         })
+        return jsonify(response_payload)
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -196,6 +216,19 @@ def generate_and_execute():
         engine = SmartTestEngine(website_url, login_id, password, headed=headed)
         test_cases = engine.generate_all_tests()
         generation_report = engine.save_report()
+        generation_summary = {
+            'total_tests': sum(len(tests) for tests in test_cases.values()),
+            'positive': len(test_cases.get('positive', [])),
+            'negative': len(test_cases.get('negative', [])),
+            'ui': len(test_cases.get('ui', [])),
+            'functional': len(test_cases.get('functional', []))
+        }
+        log_history_entry({
+            'type': 'ui_generation',
+            'website_url': website_url,
+            'summary': generation_summary,
+            'report_file': generation_report
+        })
         engine.close()
         engine = None
         
@@ -204,6 +237,13 @@ def generate_and_execute():
         execution_results = executor.execute_all_tests(test_cases)
         execution_report = executor.save_execution_report(website_url)
         execution_excel_report = executor.save_execution_report_excel(website_url)
+        log_history_entry({
+            'type': 'ui_execution',
+            'website_url': website_url,
+            'summary': execution_results['summary'],
+            'report_file': execution_report,
+            'excel_report_file': execution_excel_report
+        })
         executor.close()
         executor = None
         
@@ -212,13 +252,7 @@ def generate_and_execute():
             'test_cases': test_cases,
             'execution_results': execution_results['results'],
             'summary': {
-                'generation': {
-                    'total_tests': sum(len(tests) for tests in test_cases.values()),
-                    'positive': len(test_cases.get('positive', [])),
-                    'negative': len(test_cases.get('negative', [])),
-                    'ui': len(test_cases.get('ui', [])),
-                    'functional': len(test_cases.get('functional', []))
-                },
+                'generation': generation_summary,
                 'execution': execution_results['summary']
             },
             'reports': {
@@ -235,6 +269,132 @@ def generate_and_execute():
             engine.close()
         if executor:
             executor.close()
+
+@app.route('/api/api-tests/generate', methods=['POST'])
+def generate_api_tests():
+    """Generate API tests from an OpenAPI specification."""
+    try:
+        data = request.json or {}
+        base_url = data.get('base_url', '').strip()
+        spec_source = data.get('spec', '').strip()
+
+        if not base_url or not spec_source:
+            return jsonify({'error': 'API Base URL and OpenAPI spec are required'}), 400
+
+        engine = SmartApiEngine(base_url, spec_source)
+        test_cases = engine.generate_tests()
+        report_file = engine.save_report()
+
+        response_payload = {
+            'success': True,
+            'test_cases': test_cases,
+            'summary': engine.get_summary(),
+            'report_file': report_file
+        }
+        log_history_entry({
+            'type': 'api_generation',
+            'website_url': base_url,
+            'summary': response_payload['summary'],
+            'report_file': report_file
+        })
+        return jsonify(response_payload)
+    except ValueError as ve:
+        return jsonify({'error': str(ve)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/api-tests/execute', methods=['POST'])
+def execute_api_tests():
+    """Execute generated API test cases."""
+    try:
+        data = request.json or {}
+        base_url = data.get('base_url', '').strip()
+        test_cases = data.get('test_cases', [])
+
+        if not base_url:
+            return jsonify({'error': 'API Base URL is required'}), 400
+        if not test_cases:
+            return jsonify({'error': 'API test cases are required'}), 400
+
+        executor = ApiTestExecutor(base_url)
+        execution_results = executor.execute_tests(test_cases)
+        report_file = executor.save_execution_report()
+
+        response_payload = {
+            'success': True,
+            'results': execution_results,
+            'report_file': report_file
+        }
+        log_history_entry({
+            'type': 'api_execution',
+            'website_url': base_url,
+            'summary': execution_results['summary'],
+            'report_file': report_file
+        })
+        return jsonify(response_payload)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/run-history', methods=['GET'])
+def get_run_history():
+    """Return recent generation/execution activity."""
+    try:
+        history = get_history_entries()
+        return jsonify({
+            'success': True,
+            'history': history
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/recording/start', methods=['POST'])
+def start_recording():
+    """Start a manual recording session."""
+    try:
+        data = request.json or {}
+        website_url = data.get('website_url', '').strip()
+
+        if not website_url:
+            return jsonify({'error': 'Website URL is required'}), 400
+
+        status = recording_manager.start_session(website_url)
+        return jsonify({
+            'success': True,
+            'recording': status
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/recording/stop', methods=['POST'])
+def stop_recording():
+    """Stop the current recording session."""
+    if not recording_manager.is_active():
+        return jsonify({'error': 'No active recording session'}), 400
+
+    try:
+        result = recording_manager.stop_session()
+        return jsonify({
+            'success': True,
+            'recording': result
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/recording/status', methods=['GET'])
+def recording_status():
+    """Return current recording status."""
+    try:
+        status = recording_manager.get_status()
+        return jsonify({
+            'success': True,
+            'recording': status
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

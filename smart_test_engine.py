@@ -7,14 +7,9 @@ import json
 import time
 import os
 import sys
+import re
 from datetime import datetime
 from typing import Dict, List, Any
-
-# Fix encoding for Windows console
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 class SmartTestEngine:
     def __init__(self, website_url: str, login_id: str, password: str, headed: bool = True):
@@ -42,11 +37,15 @@ class SmartTestEngine:
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+        chrome_options.add_argument('--remote-allow-origins=*')
         if not self.headed:
             try:
                 chrome_options.add_argument('--headless=new')
             except Exception:
                 chrome_options.add_argument('--headless')
+        else:
+            # Keep headed Chrome window open for easier debugging/visibility
+            chrome_options.add_experimental_option('detach', True)
         
         # Prefer bundled chromedriver in repo, then cache, then auto-download
         repo_dir = os.path.dirname(os.path.abspath(__file__))
@@ -103,6 +102,9 @@ class SmartTestEngine:
             'dropdowns': [],
             'checkboxes': [],
             'radio_buttons': [],
+            'textareas': [],
+            'iframes': [],
+            'tables': [],
             'page_title': self.driver.title,
             'current_url': self.driver.current_url
         }
@@ -112,22 +114,56 @@ class SmartTestEngine:
             inputs = self.driver.find_elements(By.TAG_NAME, "input")
             for inp in inputs:
                 try:
-                    input_type = inp.get_attribute("type") or "text"
+                    input_type = (inp.get_attribute("type") or "text").lower()
                     input_name = inp.get_attribute("name") or inp.get_attribute("id") or "unnamed"
                     placeholder = inp.get_attribute("placeholder") or ""
-                    
-                    detected['input_fields'].append({
+                    field_meta = {
                         'type': input_type,
                         'name': input_name,
                         'id': inp.get_attribute("id"),
                         'placeholder': placeholder,
                         'required': inp.get_attribute("required") is not None,
                         'class': inp.get_attribute("class")
-                    })
+                    }
+                    detected['input_fields'].append(field_meta)
+                    
+                    if input_type == 'checkbox':
+                        detected['checkboxes'].append({
+                            'name': input_name,
+                            'id': field_meta['id'],
+                            'label': inp.get_attribute("aria-label") or placeholder or input_name
+                        })
+                    elif input_type == 'radio':
+                        detected['radio_buttons'].append({
+                            'name': input_name,
+                            'id': field_meta['id'],
+                            'label': inp.get_attribute("aria-label") or placeholder or input_name
+                        })
                 except:
                     continue
         except Exception as e:
             print(f"Error detecting inputs: {e}")
+
+        # Detect Textareas
+        try:
+            textareas = self.driver.find_elements(By.TAG_NAME, "textarea")
+            for area in textareas:
+                try:
+                    area_name = area.get_attribute("name") or area.get_attribute("id") or "textarea"
+                    field_meta = {
+                        'type': 'textarea',
+                        'name': area_name,
+                        'id': area.get_attribute("id"),
+                        'placeholder': area.get_attribute("placeholder") or "",
+                        'required': area.get_attribute("required") is not None,
+                        'class': area.get_attribute("class")
+                    }
+                    detected['textareas'].append(field_meta)
+                    detected['input_fields'].append(field_meta)
+                except:
+                    continue
+        except Exception as e:
+            print(f"Error detecting textareas: {e}")
         
         # Detect Buttons
         try:
@@ -205,6 +241,38 @@ class SmartTestEngine:
                     continue
         except Exception as e:
             print(f"Error detecting dropdowns: {e}")
+
+        # Detect Iframes
+        try:
+            frames = self.driver.find_elements(By.TAG_NAME, "iframe")
+            for idx, frame in enumerate(frames[:10]):
+                try:
+                    detected['iframes'].append({
+                        'id': frame.get_attribute("id") or f"iframe_{idx + 1}",
+                        'name': frame.get_attribute("name"),
+                        'src': frame.get_attribute("src")
+                    })
+                except:
+                    continue
+        except Exception as e:
+            print(f"Error detecting iframes: {e}")
+
+        # Detect Tables
+        try:
+            tables = self.driver.find_elements(By.TAG_NAME, "table")
+            for idx, table in enumerate(tables[:10]):
+                try:
+                    headers = [th.text.strip() for th in table.find_elements(By.TAG_NAME, "th") if th.text.strip()]
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    detected['tables'].append({
+                        'id': table.get_attribute("id") or f"table_{idx + 1}",
+                        'headers': headers[:8],
+                        'row_count': len(rows)
+                    })
+                except:
+                    continue
+        except Exception as e:
+            print(f"Error detecting tables: {e}")
         
         self.detected_elements = detected
         return detected
@@ -370,6 +438,27 @@ class SmartTestEngine:
                     'priority': 'Medium'
                 })
         
+        # Dropdown positive tests
+        for dropdown in self.detected_elements.get('dropdowns', []):
+            if not dropdown:
+                continue
+            label = dropdown.get('name') or dropdown.get('id') or "dropdown"
+            sanitized = self._sanitize_identifier(label)
+            self.test_cases['positive'].append({
+                'test_id': f"POS_DROPDOWN_{sanitized}",
+                'test_name': f"Valid selection in {label} dropdown",
+                'description': f'Ensure dropdown {label} accepts valid selections',
+                'steps': [
+                    f"Locate dropdown: {label}",
+                    'Open dropdown options',
+                    'Select a valid option',
+                    'Verify selection is applied'
+                ],
+                'expected_result': 'Dropdown should update value with selected option',
+                'field': label,
+                'priority': 'Medium'
+            })
+        
         print(f"[SUCCESS] Generated {len(self.test_cases['positive'])} positive test cases")
     
     def generate_negative_test_cases(self):
@@ -478,6 +567,36 @@ class SmartTestEngine:
                     'priority': 'Medium'
                 })
         
+        # Security payload tests for text inputs
+        security_inputs = [
+            inp for inp in self.detected_elements['input_fields']
+            if inp['type'] in ['text', 'email', 'search', 'textarea', 'url']
+        ]
+        payloads = [
+            ('SQLI', "SQL injection attempt", "admin' OR '1'='1"),
+            ('XSS', "XSS script injection", '<script>alert(\"XSS\")</script>')
+        ]
+        for inp in security_inputs[:10]:
+            label = inp['name'] or inp['id'] or "field"
+            sanitized = self._sanitize_identifier(label)
+            for suffix, description, payload in payloads:
+                self.test_cases['negative'].append({
+                    'test_id': f"NEG_SECURITY_{sanitized}_{suffix}",
+                    'test_name': f"{description} in {label}",
+                    'description': f'Test how {label} handles {description.lower()} payloads',
+                    'steps': [
+                        f"Locate field: {label}",
+                        f"Enter payload: {payload}",
+                        'Submit the enclosing form or action',
+                        'Observe application response'
+                    ],
+                    'expected_result': 'Application should reject or sanitize the malicious payload',
+                    'priority': 'Critical',
+                    'field': inp['name'],
+                    'field_id': inp['id'],
+                    'malicious_payload': payload
+                })
+        
         print(f"[SUCCESS] Generated {len(self.test_cases['negative'])} negative test cases")
     
     def generate_ui_test_cases(self):
@@ -517,6 +636,58 @@ class SmartTestEngine:
                     'expected_result': 'Field should be properly styled, visible, and aligned',
                     'priority': 'Medium'
                 })
+        
+        # Checkbox UI tests
+        for checkbox in self.detected_elements.get('checkboxes', []):
+            label = checkbox.get('label') or checkbox.get('name') or "Checkbox"
+            sanitized = self._sanitize_identifier(label)
+            self.test_cases['ui'].append({
+                'test_id': f"UI_CHECKBOX_{sanitized}",
+                'test_name': f"Verify {label} checkbox visibility",
+                'description': f'Ensure {label} checkbox is visible, aligned, and toggleable',
+                'steps': [
+                    f"Locate checkbox: {label}",
+                    'Verify checkbox is visible',
+                    'Toggle checkbox on and off',
+                    'Verify state changes correctly'
+                ],
+                'expected_result': 'Checkbox should be visible and reflect user interaction',
+                'priority': 'Medium'
+            })
+        
+        # Radio button UI tests
+        for radio in self.detected_elements.get('radio_buttons', []):
+            label = radio.get('label') or radio.get('name') or "Radio option"
+            sanitized = self._sanitize_identifier(label)
+            self.test_cases['ui'].append({
+                'test_id': f"UI_RADIO_{sanitized}",
+                'test_name': f"Verify {label} radio option",
+                'description': f'Ensure radio option {label} is visible and selectable',
+                'steps': [
+                    f"Locate radio option: {label}",
+                    'Verify option is visible',
+                    'Select the option and verify other options respond appropriately'
+                ],
+                'expected_result': 'Radio option should be selectable and mutually exclusive',
+                'priority': 'Medium'
+            })
+        
+        # Iframe UI tests
+        for frame in self.detected_elements.get('iframes', []):
+            frame_label = frame.get('id') or frame.get('name') or frame.get('src') or "iframe"
+            sanitized = self._sanitize_identifier(frame_label)
+            self.test_cases['ui'].append({
+                'test_id': f"UI_IFRAME_{sanitized}",
+                'test_name': f"Verify iframe {frame_label} visibility",
+                'description': f'Ensure iframe {frame_label} loads correctly',
+                'steps': [
+                    f"Locate iframe: {frame_label}",
+                    'Verify iframe is visible',
+                    'Verify iframe content loads without errors'
+                ],
+                'expected_result': 'Iframe content should be accessible and visible',
+                'priority': 'Low'
+            })
         
         # Page UI tests
         self.test_cases['ui'].append({
@@ -659,6 +830,44 @@ class SmartTestEngine:
                 'test_type': 'dropdown_functionality'
             })
         
+        # Table validation tests
+        for table in self.detected_elements.get('tables', []):
+            table_id = table.get('id') or "data_table"
+            self.test_cases['functional'].append({
+                'test_id': f"FUNC_TABLE_{self._sanitize_identifier(table_id)}",
+                'test_name': f"Verify data table {table_id} renders correctly",
+                'description': f'Check table {table_id} row counts and headers',
+                'steps': [
+                    f"Locate table: {table_id}",
+                    'Verify headers are displayed',
+                    'Verify row count matches expected data',
+                    'Scroll through table content if paginated'
+                ],
+                'expected_result': 'Table should render rows and headers without layout issues',
+                'priority': 'Medium',
+                'test_type': 'table_validation',
+                'table': table
+            })
+        
+        # Iframe interaction tests
+        for frame in self.detected_elements.get('iframes', []):
+            frame_label = frame.get('id') or frame.get('name') or frame.get('src') or "iframe"
+            self.test_cases['functional'].append({
+                'test_id': f"FUNC_IFRAME_{self._sanitize_identifier(frame_label)}",
+                'test_name': f"Verify iframe {frame_label} interaction",
+                'description': f'Ensure iframe {frame_label} loads and can be switched to',
+                'steps': [
+                    f"Locate iframe: {frame_label}",
+                    'Switch focus to iframe',
+                    'Verify iframe content loads',
+                    'Switch back to parent context'
+                ],
+                'expected_result': 'Iframe should be accessible and load content.',
+                'priority': 'Low',
+                'test_type': 'iframe_validation',
+                'iframe': frame
+            })
+        
         # Page load and performance tests
         self.test_cases['functional'].append({
             'test_id': 'FUNC_PERF_001',
@@ -700,6 +909,12 @@ class SmartTestEngine:
             })
         
         print(f"[SUCCESS] Generated {len(self.test_cases['functional'])} functional test cases")
+    
+    def _sanitize_identifier(self, text: str) -> str:
+        if not text:
+            return "FIELD"
+        value = re.sub(r'[^a-zA-Z0-9]+', '_', text).strip('_')
+        return value or "FIELD"
     
     def generate_all_tests(self):
         """Generate all types of test cases"""

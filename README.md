@@ -10,6 +10,9 @@ A professional, intelligent test automation platform that automatically generate
 - **Beautiful UI**: Modern, responsive design with Mobilise branding
 - **Test Reports**: Export comprehensive test reports in JSON format
 - **Real-time Analysis**: Analyze website structure before generating tests
+- **Manual Recording**: Record real browser sessions and generate editable Selenium scripts
+- **API Testing Lab**: Import OpenAPI/Swagger specs to auto-generate and execute API suites
+- **Run History**: Built-in activity feed to review recent generations/executions across UI and API suites
 
 ## 📋 Requirements
 
@@ -43,6 +46,27 @@ Open your browser and navigate to: `http://localhost:5000`
 
 4. **View Results**: Browse generated test cases by category
 5. **Download Report**: Download comprehensive test report as JSON
+
+### Manual Recording Studio
+
+1. Enter the website URL in the main configuration card
+2. Click **Start Recording** to launch a headed Chrome window
+3. Perform the desired steps manually—every click, input, and submission is captured
+4. Click **Stop & Save** to convert the flow into an editable Selenium Python script
+5. Copy or download the script, tweak as needed, and replay it through the executor
+
+### API Testing Lab
+
+1. Paste your API base URL and OpenAPI/Swagger JSON into the API Testing card
+2. Click **Generate API Tests** to auto-build positive and negative scenarios
+3. Review the generated list, then hit **Execute API Tests** to run live requests
+4. Download generation or execution reports for auditing and CI/CD evidence
+
+### Run History
+
+- Open the dashboard to view the latest UI/API generations and executions
+- Each entry surfaces timestamp, target URL, totals, and report download shortcuts
+- Use it as a lightweight audit trail or to confirm CI jobs finished successfully
 
 ## 🎯 Test Types Generated
 

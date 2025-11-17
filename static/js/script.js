@@ -2,6 +2,13 @@
 
 let currentReportFile = null;
 let currentExcelReportFile = null;
+let recordingPollInterval = null;
+let recordingActive = false;
+let currentApiTests = [];
+let currentApiResults = [];
+let currentApiBaseUrl = '';
+let currentApiReportFile = null;
+let currentApiExecutionReportFile = null;
 
 // DOM Elements
 const testForm = document.getElementById('testForm');
@@ -15,6 +22,27 @@ const analysisSection = document.getElementById('analysisSection');
 const downloadBtn = document.getElementById('downloadBtn');
 const downloadExcelBtn = document.getElementById('downloadExcelBtn');
 const headedToggle = document.getElementById('headed_toggle');
+const startRecordingBtn = document.getElementById('startRecordingBtn');
+const stopRecordingBtn = document.getElementById('stopRecordingBtn');
+const recordingStatusChip = document.getElementById('recordingStatusChip');
+const recordedStepsList = document.getElementById('recordedStepsList');
+const recordedStepsCount = document.getElementById('recordedStepsCount');
+const recordedScriptArea = document.getElementById('recordedScript');
+const copyScriptBtn = document.getElementById('copyScriptBtn');
+const downloadScriptBtn = document.getElementById('downloadScriptBtn');
+const apiBaseUrlInput = document.getElementById('api_base_url');
+const apiSpecInput = document.getElementById('apiSpecInput');
+const generateApiBtn = document.getElementById('generateApiBtn');
+const executeApiBtn = document.getElementById('executeApiBtn');
+const clearApiBtn = document.getElementById('clearApiBtn');
+const apiSummaryCard = document.getElementById('apiSummary');
+const apiTestsList = document.getElementById('apiTestsList');
+const downloadApiReportBtn = document.getElementById('downloadApiReportBtn');
+const downloadApiExecutionBtn = document.getElementById('downloadApiExecutionBtn');
+const apiTotalCount = document.getElementById('apiTotalCount');
+const apiPositiveCount = document.getElementById('apiPositiveCount');
+const apiNegativeCount = document.getElementById('apiNegativeCount');
+const runHistoryList = document.getElementById('runHistoryList');
 
 // Tab functionality
 const tabButtons = document.querySelectorAll('.tab-btn');
@@ -212,6 +240,60 @@ testLoginBtn.addEventListener('click', async () => {
     }
 });
 
+// Recording Controls
+if (startRecordingBtn && stopRecordingBtn) {
+    startRecordingBtn.addEventListener('click', () => {
+        if (!recordingActive) {
+            startRecording();
+        }
+    });
+
+    stopRecordingBtn.addEventListener('click', () => {
+        if (recordingActive) {
+            stopRecording();
+        }
+    });
+}
+
+if (copyScriptBtn) {
+    copyScriptBtn.addEventListener('click', () => {
+        if (!recordedScriptArea) {
+            return;
+        }
+        const scriptText = recordedScriptArea.value.trim();
+        if (!scriptText) {
+            alert('No script available to copy');
+            return;
+        }
+        navigator.clipboard.writeText(scriptText)
+            .then(() => alert('Script copied to clipboard'))
+            .catch(() => alert('Unable to copy script'));
+    });
+}
+
+if (downloadScriptBtn) {
+    downloadScriptBtn.addEventListener('click', () => {
+        if (!recordedScriptArea) {
+            return;
+        }
+        const scriptText = recordedScriptArea.value.trim();
+        if (!scriptText) {
+            alert('No script available to download');
+            return;
+        }
+        const blob = new Blob([scriptText], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        link.download = `mobilise_recording_${timestamp}.py`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    });
+}
+
 // Download Report (JSON)
 downloadBtn.addEventListener('click', () => {
     if (currentReportFile) {
@@ -230,6 +312,27 @@ if (downloadExcelBtn) {
             alert('No Excel report available to download');
         }
     });
+}
+
+// API Testing controls
+if (generateApiBtn) {
+    generateApiBtn.addEventListener('click', generateApiTests);
+}
+
+if (executeApiBtn) {
+    executeApiBtn.addEventListener('click', executeApiTests);
+}
+
+if (clearApiBtn) {
+    clearApiBtn.addEventListener('click', resetApiBuilder);
+}
+
+if (downloadApiReportBtn) {
+    downloadApiReportBtn.addEventListener('click', () => downloadApiReport(currentApiReportFile));
+}
+
+if (downloadApiExecutionBtn) {
+    downloadApiExecutionBtn.addEventListener('click', () => downloadApiReport(currentApiExecutionReportFile));
 }
 
 // Display Results
@@ -264,6 +367,7 @@ function displayResults(data) {
     
     // Scroll to results
     resultsSection.scrollIntoView({ behavior: 'smooth' });
+    refreshRunHistory();
 }
 
 // Display Results with Execution
@@ -304,6 +408,7 @@ function displayResultsWithExecution(data) {
     
     // Scroll to results
     resultsSection.scrollIntoView({ behavior: 'smooth' });
+    refreshRunHistory();
 }
 
 // Display Test Cases
@@ -528,6 +633,444 @@ function hideAnalysis() {
     analysisSection.style.display = 'none';
 }
 
+// Recording functions
+async function startRecording() {
+    if (!startRecordingBtn || !stopRecordingBtn) {
+        return;
+    }
+
+    const websiteUrl = document.getElementById('website_url').value.trim();
+    if (!websiteUrl) {
+        alert('Please enter a website URL before recording');
+        return;
+    }
+
+    setRecordingStatus('starting', 'Starting...');
+    startRecordingBtn.disabled = true;
+    stopRecordingBtn.disabled = true;
+    try {
+        const response = await fetch('/api/recording/start', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ website_url: websiteUrl })
+        });
+
+        const data = await response.json();
+        if (data.success) {
+            recordingActive = true;
+            stopRecordingBtn.disabled = false;
+            setRecordingStatus('recording', 'Recording');
+            renderRecordedSteps([]);
+            if (recordedScriptArea) {
+                recordedScriptArea.value = '';
+            }
+            startRecordingPolling();
+        } else {
+            alert('Error: ' + (data.error || 'Unable to start recording'));
+            resetRecordingControls();
+        }
+    } catch (error) {
+        console.error(error);
+        alert('Error: ' + error.message);
+        resetRecordingControls();
+    }
+}
+
+async function stopRecording() {
+    if (!stopRecordingBtn || !startRecordingBtn) {
+        return;
+    }
+
+    setRecordingStatus('stopping', 'Stopping...');
+    stopRecordingBtn.disabled = true;
+    try {
+        const response = await fetch('/api/recording/stop', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        const data = await response.json();
+        if (data.success) {
+            recordingActive = false;
+            stopRecordingPolling();
+            startRecordingBtn.disabled = false;
+            const recording = data.recording || {};
+            updateRecordingUI(recording);
+            setRecordingStatus('idle', 'Idle');
+        } else {
+            alert('Error: ' + (data.error || 'Unable to stop recording'));
+            stopRecordingBtn.disabled = false;
+        }
+    } catch (error) {
+        console.error(error);
+        alert('Error: ' + error.message);
+        stopRecordingBtn.disabled = false;
+    }
+}
+
+function startRecordingPolling() {
+    fetchRecordingStatus();
+    if (recordingPollInterval) {
+        clearInterval(recordingPollInterval);
+    }
+    recordingPollInterval = setInterval(fetchRecordingStatus, 2000);
+}
+
+function stopRecordingPolling() {
+    if (recordingPollInterval) {
+        clearInterval(recordingPollInterval);
+        recordingPollInterval = null;
+    }
+}
+
+async function fetchRecordingStatus() {
+    try {
+        const response = await fetch('/api/recording/status');
+        const data = await response.json();
+        if (data.success && data.recording) {
+            updateRecordingUI(data.recording);
+            if (!data.recording.active) {
+                stopRecordingPolling();
+            }
+        }
+    } catch (error) {
+        console.error('Recording status error', error);
+    }
+}
+
+function updateRecordingUI(recording) {
+    if (!recording) {
+        return;
+    }
+    if (Array.isArray(recording.steps)) {
+        renderRecordedSteps(recording.steps);
+    }
+    if (typeof recording.python_script === 'string' && recordedScriptArea) {
+        if (recordingActive || !recordedScriptArea.value.trim()) {
+            recordedScriptArea.value = recording.python_script;
+        }
+    }
+}
+
+function renderRecordedSteps(steps) {
+    if (!recordedStepsList || !recordedStepsCount) {
+        return;
+    }
+    recordedStepsList.innerHTML = '';
+    recordedStepsCount.textContent = steps.length;
+
+    if (!steps.length) {
+        recordedStepsList.innerHTML = '<p class="muted-text">No steps captured yet.</p>';
+        return;
+    }
+
+    steps.forEach(step => {
+        const selector = escapeHtml(step.selector || '');
+        const value = escapeHtml(step.value || '');
+        const card = document.createElement('div');
+        card.className = 'recording-step-card';
+        card.innerHTML = `
+            <div class="step-header">
+                <span class="step-id">${step.step_id}</span>
+                <span class="step-action">${step.action}</span>
+            </div>
+            <p><strong>Selector:</strong> ${selector}</p>
+            ${step.value ? `<p><strong>Value:</strong> ${value}</p>` : ''}
+        `;
+        recordedStepsList.appendChild(card);
+    });
+}
+
+function setRecordingStatus(state, label) {
+    if (!recordingStatusChip) {
+        return;
+    }
+    const icons = {
+        idle: '<i class="fas fa-circle"></i>',
+        recording: '<i class="fas fa-dot-circle"></i>',
+        starting: '<i class="fas fa-sync fa-spin"></i>',
+        stopping: '<i class="fas fa-sync fa-spin"></i>'
+    };
+    recordingStatusChip.innerHTML = `${icons[state] || icons.idle} ${label}`;
+    recordingStatusChip.className = `status-chip status-${state}`;
+}
+
+function resetRecordingControls() {
+    recordingActive = false;
+    if (startRecordingBtn) {
+        startRecordingBtn.disabled = false;
+    }
+    if (stopRecordingBtn) {
+        stopRecordingBtn.disabled = true;
+    }
+    setRecordingStatus('idle', 'Idle');
+    stopRecordingPolling();
+}
+
+// API Testing functions
+async function generateApiTests() {
+    if (!apiBaseUrlInput || !apiSpecInput) {
+        return;
+    }
+    const baseUrl = apiBaseUrlInput.value.trim();
+    const specText = apiSpecInput.value.trim();
+
+    if (!baseUrl || !specText) {
+        alert('Please provide API Base URL and OpenAPI JSON before generating tests');
+        return;
+    }
+
+    showLoading('Generating API tests...', 'Parsing specification and preparing cases');
+    try {
+        const response = await fetch('/api/api-tests/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                base_url: baseUrl,
+                spec: specText
+            })
+        });
+        const data = await response.json();
+        hideLoading();
+
+        if (data.success) {
+            currentApiTests = data.test_cases || [];
+            currentApiResults = [];
+            currentApiBaseUrl = baseUrl;
+            currentApiReportFile = data.report_file || null;
+            currentApiExecutionReportFile = null;
+
+            renderApiTests(currentApiTests);
+            updateApiSummaryCard(data.summary);
+            if (executeApiBtn) {
+                executeApiBtn.disabled = currentApiTests.length === 0;
+            }
+            if (downloadApiReportBtn) {
+                downloadApiReportBtn.disabled = !currentApiReportFile;
+            }
+            if (downloadApiExecutionBtn) {
+                downloadApiExecutionBtn.disabled = true;
+            }
+            refreshRunHistory();
+        } else {
+            alert('Error: ' + (data.error || 'Unable to generate API tests'));
+        }
+    } catch (error) {
+        hideLoading();
+        console.error(error);
+        alert('Error: ' + error.message);
+    }
+}
+
+async function executeApiTests() {
+    if (!currentApiTests.length) {
+        alert('Generate API tests before execution');
+        return;
+    }
+    const baseUrl = currentApiBaseUrl || (apiBaseUrlInput ? apiBaseUrlInput.value.trim() : '');
+    if (!baseUrl) {
+        alert('API Base URL is required to execute tests');
+        return;
+    }
+
+    showLoading('Executing API tests...', 'Sending HTTP requests');
+    try {
+        const response = await fetch('/api/api-tests/execute', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                base_url: baseUrl,
+                test_cases: currentApiTests
+            })
+        });
+        const data = await response.json();
+        hideLoading();
+
+        if (data.success) {
+            currentApiResults = (data.results && data.results.tests) || [];
+            currentApiExecutionReportFile = data.report_file || null;
+            renderApiTests(currentApiTests, currentApiResults);
+            updateApiSummaryCard(data.results ? data.results.summary : null);
+            if (downloadApiExecutionBtn) {
+                downloadApiExecutionBtn.disabled = !currentApiExecutionReportFile;
+            }
+            refreshRunHistory();
+        } else {
+            alert('Error: ' + (data.error || 'Unable to execute API tests'));
+        }
+    } catch (error) {
+        hideLoading();
+        console.error(error);
+        alert('Error: ' + error.message);
+    }
+}
+
+function renderApiTests(tests, executionResults = []) {
+    if (!apiTestsList) {
+        return;
+    }
+
+    apiTestsList.innerHTML = '';
+    if (!tests.length) {
+        apiTestsList.innerHTML = '<p class="muted-text">API test cases will appear here after generation.</p>';
+        return;
+    }
+
+    const resultsMap = {};
+    executionResults.forEach(result => {
+        resultsMap[result.test_id] = result;
+    });
+
+    tests.forEach(test => {
+        const card = document.createElement('div');
+        const categoryClass = test.category || '';
+        card.className = `api-test-card ${categoryClass}`;
+        const status = resultsMap[test.test_id];
+        let statusHtml = '';
+        if (status) {
+            const badgeClass = status.status === 'PASS' ? 'api-status-pass' : 'api-status-fail';
+            statusHtml = `<span class="api-status-badge ${badgeClass}">${status.status}</span>`;
+        }
+
+        const urlText = escapeHtml(test.url || test.path || '');
+        const description = escapeHtml(test.description || '');
+
+        card.innerHTML = `
+            <div class="api-test-header">
+                <span class="api-method">${test.method}</span>
+                <span class="api-url">${urlText}</span>
+                ${statusHtml}
+            </div>
+            <p><strong>Expected:</strong> ${test.expected_status}</p>
+            <p>${description || 'No description supplied.'}</p>
+        `;
+        apiTestsList.appendChild(card);
+    });
+}
+
+function updateApiSummaryCard(summary) {
+    if (!apiSummaryCard || !apiTotalCount || !apiPositiveCount || !apiNegativeCount) {
+        return;
+    }
+    if (!summary) {
+        apiSummaryCard.style.display = 'none';
+        return;
+    }
+
+    apiSummaryCard.style.display = 'block';
+    const total = summary.total || 0;
+    const positive = summary.positive ?? summary.passed ?? 0;
+    const negative = summary.negative ?? summary.failed ?? 0;
+    apiTotalCount.textContent = total;
+    apiPositiveCount.textContent = positive;
+    apiNegativeCount.textContent = negative;
+}
+
+function resetApiBuilder() {
+    if (apiSpecInput) {
+        apiSpecInput.value = '';
+    }
+    if (apiBaseUrlInput) {
+        apiBaseUrlInput.value = '';
+    }
+    currentApiTests = [];
+    currentApiResults = [];
+    currentApiBaseUrl = '';
+    currentApiReportFile = null;
+    currentApiExecutionReportFile = null;
+    renderApiTests([]);
+    updateApiSummaryCard(null);
+    if (executeApiBtn) {
+        executeApiBtn.disabled = true;
+    }
+    if (downloadApiReportBtn) {
+        downloadApiReportBtn.disabled = true;
+    }
+    if (downloadApiExecutionBtn) {
+        downloadApiExecutionBtn.disabled = true;
+    }
+}
+
+function downloadApiReport(fileName) {
+    if (!fileName) {
+        alert('No report available to download');
+        return;
+    }
+    window.location.href = `/api/download-report/${fileName}`;
+}
+
+async function refreshRunHistory() {
+    if (!runHistoryList) {
+        return;
+    }
+    try {
+        const response = await fetch('/api/run-history');
+        const data = await response.json();
+        if (data.success) {
+            renderRunHistory(data.history || []);
+        }
+    } catch (error) {
+        console.error('History fetch failed', error);
+    }
+}
+
+function renderRunHistory(items) {
+    if (!runHistoryList) {
+        return;
+    }
+    runHistoryList.innerHTML = '';
+    if (!items.length) {
+        runHistoryList.innerHTML = '<p class="muted-text align-left">No runs logged yet.</p>';
+        return;
+    }
+    const typeLabels = {
+        ui_generation: 'UI Test Generation',
+        ui_execution: 'UI Execution',
+        api_generation: 'API Test Generation',
+        api_execution: 'API Execution',
+        recording_session: 'Recording Session'
+    };
+    items.forEach(item => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'history-item';
+        const badgeClass = item.type && item.type.startsWith('api')
+            ? 'api'
+            : (item.type && item.type.startsWith('ui') ? 'ui' : 'recording');
+        const label = typeLabels[item.type] || item.type || 'Activity';
+        const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString() : 'N/A';
+        wrapper.innerHTML = `
+            <div class="meta">
+                <strong>${label}</strong>
+                <span>${item.website_url || 'N/A'}</span>
+            </div>
+            <div class="meta" style="text-align: right;">
+                <span>${timestamp}</span>
+                <span class="history-badge ${badgeClass}">${badgeClass.toUpperCase()}</span>
+            </div>
+        `;
+        runHistoryList.appendChild(wrapper);
+    });
+}
+
+function escapeHtml(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Form submission
 testForm.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -542,4 +1085,5 @@ document.addEventListener('keypress', (e) => {
 });
 
 // Initialize
+refreshRunHistory();
 console.log('Mobilise Test Automation Tool initialized');
