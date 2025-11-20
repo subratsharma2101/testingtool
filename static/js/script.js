@@ -10,6 +10,50 @@ let currentApiBaseUrl = '';
 let currentApiReportFile = null;
 let currentApiExecutionReportFile = null;
 
+// Helper function for safe API calls
+async function safeFetch(url, options = {}) {
+    const response = await fetch(url, options);
+    
+    // Check if response is OK
+    if (!response.ok) {
+        const contentType = response.headers.get('content-type');
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        
+        // Try to parse JSON error if available
+        if (contentType && contentType.includes('application/json')) {
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.error || errorMessage;
+            } catch (e) {
+                // If JSON parse fails, use status text
+            }
+        } else {
+            // If not JSON, try to get text
+            try {
+                const errorText = await response.text();
+                if (errorText && errorText.length < 200) {
+                    errorMessage = errorText;
+                }
+            } catch (e) {
+                // Use default error message
+            }
+        }
+        
+        const error = new Error(errorMessage);
+        error.status = response.status;
+        throw error;
+    }
+    
+    // Check content type before parsing
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response. Please check the server logs.');
+    }
+    
+    // Parse and return JSON
+    return await response.json();
+}
+
 // DOM Elements
 const testForm = document.getElementById('testForm');
 const generateBtn = document.getElementById('generateBtn');
@@ -79,7 +123,7 @@ generateBtn.addEventListener('click', async () => {
     hideAnalysis();
     
     try {
-        const response = await fetch('/api/generate-tests', {
+        const data = await safeFetch('/api/generate-tests', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -92,10 +136,9 @@ generateBtn.addEventListener('click', async () => {
             })
         });
         
-        const data = await response.json();
-        
         if (data.success) {
             currentReportFile = data.report_file;
+            currentExcelReportFile = data.excel_report_file || null;
             displayResults(data);
             hideLoading();
         } else {
@@ -123,7 +166,7 @@ analyzeBtn.addEventListener('click', async () => {
     hideAnalysis();
     
     try {
-        const response = await fetch('/api/analyze-website', {
+        const data = await safeFetch('/api/analyze-website', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -132,8 +175,6 @@ analyzeBtn.addEventListener('click', async () => {
                 website_url: websiteUrl
             })
         });
-        
-        const data = await response.json();
         
         if (data.success) {
             displayAnalysis(data.elements);
@@ -166,7 +207,7 @@ generateAndExecuteBtn.addEventListener('click', async () => {
     hideAnalysis();
     
     try {
-        const response = await fetch('/api/generate-and-execute', {
+        const data = await safeFetch('/api/generate-and-execute', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -178,8 +219,6 @@ generateAndExecuteBtn.addEventListener('click', async () => {
                 headed: headedToggle ? headedToggle.value === 'true' : true
             })
         });
-        
-        const data = await response.json();
         
         if (data.success) {
             currentReportFile = data.reports.generation_report;
@@ -213,7 +252,7 @@ testLoginBtn.addEventListener('click', async () => {
     hideAnalysis();
     
     try {
-        const response = await fetch('/api/test-login', {
+        const data = await safeFetch('/api/test-login', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -221,11 +260,10 @@ testLoginBtn.addEventListener('click', async () => {
             body: JSON.stringify({
                 website_url: websiteUrl,
                 login_id: loginId,
-                password: password
+                password: password,
+                headed: headedToggle ? headedToggle.value === 'true' : true
             })
         });
-        
-        const data = await response.json();
         hideLoading();
         
         if (data.success) {
@@ -649,15 +687,13 @@ async function startRecording() {
     startRecordingBtn.disabled = true;
     stopRecordingBtn.disabled = true;
     try {
-        const response = await fetch('/api/recording/start', {
+        const data = await safeFetch('/api/recording/start', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ website_url: websiteUrl })
         });
-
-        const data = await response.json();
         if (data.success) {
             recordingActive = true;
             stopRecordingBtn.disabled = false;
@@ -686,13 +722,12 @@ async function stopRecording() {
     setRecordingStatus('stopping', 'Stopping...');
     stopRecordingBtn.disabled = true;
     try {
-        const response = await fetch('/api/recording/stop', {
+        const data = await safeFetch('/api/recording/stop', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             }
         });
-        const data = await response.json();
         if (data.success) {
             recordingActive = false;
             stopRecordingPolling();
@@ -728,8 +763,12 @@ function stopRecordingPolling() {
 
 async function fetchRecordingStatus() {
     try {
-        const response = await fetch('/api/recording/status');
-        const data = await response.json();
+        const data = await safeFetch('/api/recording/status', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
         if (data.success && data.recording) {
             updateRecordingUI(data.recording);
             if (!data.recording.active) {
@@ -825,7 +864,7 @@ async function generateApiTests() {
 
     showLoading('Generating API tests...', 'Parsing specification and preparing cases');
     try {
-        const response = await fetch('/api/api-tests/generate', {
+        const data = await safeFetch('/api/api-tests/generate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -835,7 +874,6 @@ async function generateApiTests() {
                 spec: specText
             })
         });
-        const data = await response.json();
         hideLoading();
 
         if (data.success) {
@@ -880,7 +918,7 @@ async function executeApiTests() {
 
     showLoading('Executing API tests...', 'Sending HTTP requests');
     try {
-        const response = await fetch('/api/api-tests/execute', {
+        const data = await safeFetch('/api/api-tests/execute', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -890,7 +928,6 @@ async function executeApiTests() {
                 test_cases: currentApiTests
             })
         });
-        const data = await response.json();
         hideLoading();
 
         if (data.success) {
@@ -1011,8 +1048,12 @@ async function refreshRunHistory() {
         return;
     }
     try {
-        const response = await fetch('/api/run-history');
-        const data = await response.json();
+        const data = await safeFetch('/api/run-history', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
         if (data.success) {
             renderRunHistory(data.history || []);
         }

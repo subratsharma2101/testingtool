@@ -3,8 +3,6 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from selenium.common.exceptions import WebDriverException
-
 from smart_test_engine import SmartTestEngine
 
 
@@ -14,7 +12,7 @@ class RecordingSession:
     def __init__(self, website_url: str):
         self.website_url = website_url
         self.engine: Optional[SmartTestEngine] = None
-        self.driver = None
+        self.page = None
         self.started_at = datetime.utcnow()
         self.events: List[Dict[str, Any]] = []
         self.steps: List[Dict[str, Any]] = []
@@ -22,13 +20,15 @@ class RecordingSession:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._step_counter = 0
+        self.screenshots: List[Dict[str, str]] = []  # Store screenshots with step IDs
+        self.wait_times: Dict[str, float] = {}  # Track wait times between steps
 
     def start(self):
         """Launch Chrome and begin polling for recorded events."""
         self.engine = SmartTestEngine(self.website_url, "", "", headed=True)
-        self.driver = self.engine.initialize_driver()
-        self.driver.get(self.website_url)
-        time.sleep(2)
+        self.page = self.engine.initialize_driver()
+        self.page.goto(self.website_url, wait_until='domcontentloaded')
+        self.page.wait_for_load_state('networkidle')
         self._inject_recorder()
         self._thread = threading.Thread(target=self._poll_events, daemon=True)
         self._thread.start()
@@ -60,14 +60,42 @@ class RecordingSession:
 
                 function getCssSelector(element) {
                     if (!element) { return ''; }
+                    
+                    // Prefer ID
                     if (element.id) {
                         return '#' + element.id;
                     }
+                    
+                    // Try data-testid or data-test
+                    if (element.getAttribute('data-testid')) {
+                        return '[data-testid="' + element.getAttribute('data-testid') + '"]';
+                    }
+                    if (element.getAttribute('data-test')) {
+                        return '[data-test="' + element.getAttribute('data-test') + '"]';
+                    }
+                    
+                    // Try name attribute
+                    if (element.name) {
+                        if (element.tagName.toLowerCase() === 'input' || element.tagName.toLowerCase() === 'select') {
+                            return element.tagName.toLowerCase() + '[name="' + element.name + '"]';
+                        }
+                    }
+                    
+                    // Try role and accessible name
+                    if (element.getAttribute('role')) {
+                        var role = element.getAttribute('role');
+                        var ariaLabel = element.getAttribute('aria-label');
+                        if (ariaLabel) {
+                            return '[role="' + role + '"][aria-label="' + ariaLabel + '"]';
+                        }
+                    }
+                    
+                    // Build path selector
                     var parts = [];
                     while (element && element.nodeType === 1) {
                         var selector = element.nodeName.toLowerCase();
                         if (element.className) {
-                            var classes = element.className.trim().split(/\\s+/).slice(0, 3);
+                            var classes = element.className.trim().split(/\\s+/).slice(0, 2);
                             if (classes.length) {
                                 selector += '.' + classes.join('.');
                             }
@@ -82,7 +110,9 @@ class RecordingSession:
                         selector += ':nth-of-type(' + nth + ')';
                         parts.unshift(selector);
                         element = element.parentElement;
-                        if (selector.indexOf('#') === 0) {
+                        
+                        // Stop at body or if we found a good selector
+                        if (!element || element.nodeName === 'BODY' || element.nodeName === 'HTML') {
                             break;
                         }
                     }
@@ -102,28 +132,51 @@ class RecordingSession:
                             value: target.value || '',
                             text: target.innerText || target.textContent || '',
                             key: event.key || '',
-                            url: window.location.href
+                            url: window.location.href,
+                            href: target.href || '',
+                            checked: target.checked !== undefined ? target.checked : null,
+                            selected: target.selected !== undefined ? target.selected : null,
+                            disabled: target.disabled !== undefined ? target.disabled : null
                         };
                         window.__recordedEvents.push(data);
                     } catch (err) {
                         console.error('Recorder error', err);
                     }
                 }
+                
+                // Record navigation events
+                window.addEventListener('popstate', function(event) {
+                    recordEvent({type: 'navigation', target: window, timestamp: Date.now()});
+                });
+                
+                // Record URL changes
+                var lastUrl = window.location.href;
+                setInterval(function() {
+                    if (window.location.href !== lastUrl) {
+                        lastUrl = window.location.href;
+                        recordEvent({
+                            type: 'navigation',
+                            target: window,
+                            timestamp: Date.now(),
+                            url: window.location.href
+                        });
+                    }
+                }, 100);
 
-                ['click', 'change', 'input', 'submit', 'keydown'].forEach(function(type) {
+                ['click', 'change', 'input', 'submit', 'keydown', 'focus', 'blur'].forEach(function(type) {
                     document.addEventListener(type, function(event) {
                         recordEvent(event);
                     }, true);
                 });
             })();
         """
-        self.driver.execute_script(script)
+        self.page.evaluate(script)
 
     def _poll_events(self):
         """Continuously pulls recorded events from the browser."""
         while not self._stop_event.is_set():
             try:
-                events = self.driver.execute_script(
+                events = self.page.evaluate(
                     """
                     if (!window.__recordedEvents) { return []; }
                     const events = window.__recordedEvents.slice();
@@ -131,7 +184,7 @@ class RecordingSession:
                     return events;
                     """
                 )
-            except WebDriverException:
+            except Exception:
                 break
 
             if events:
@@ -151,12 +204,10 @@ class RecordingSession:
         event_type = event.get("type")
         selector = event.get("selector")
 
-        if not selector:
-            return None
-
         action = None
         value = event.get("value") or ""
-
+        
+        # Handle different event types
         if event_type == "click":
             action = "click"
         elif event_type in {"input", "change"}:
@@ -165,15 +216,32 @@ class RecordingSession:
             action = "submit"
         elif event_type == "keydown" and event.get("key") == "Enter":
             action = "press_enter"
+        elif event_type == "navigation":
+            action = "navigate"
+            selector = event.get("url", "")
+        elif event_type == "focus":
+            action = "focus"
+        elif event_type == "change" and event.get("tag") == "select":
+            action = "select"
+        elif event_type == "change" and event.get("tag") in ["input"] and event.get("checked") is not None:
+            action = "check" if event.get("checked") else "uncheck"
         else:
             return None
 
+        # Merge typing events for the same field
         if action == "type":
             last_step = self.steps[-1] if self.steps else None
             if last_step and last_step["action"] == "type" and last_step["selector"] == selector:
                 last_step["value"] = value
                 last_step["updated_at"] = datetime.utcnow().isoformat()
                 return None
+
+        # Calculate wait time since last step
+        wait_time = 0
+        if self.steps:
+            last_timestamp = self.steps[-1].get("timestamp", 0)
+            current_timestamp = event.get("timestamp", 0)
+            wait_time = max(0, (current_timestamp - last_timestamp) / 1000.0)  # Convert to seconds
 
         self._step_counter += 1
         step = {
@@ -185,20 +253,29 @@ class RecordingSession:
             "tag": event.get("tag"),
             "url": event.get("url"),
             "text": event.get("text", ""),
+            "wait_time": wait_time,
+            "href": event.get("href", ""),
+            "checked": event.get("checked"),
+            "selected": event.get("selected"),
+            "disabled": event.get("disabled")
         }
+        
+        # Store wait time if significant (>0.5 seconds)
+        if wait_time > 0.5:
+            self.wait_times[step["step_id"]] = wait_time
+        
         return step
 
     def build_python_script(self) -> str:
-        """Generate a Selenium Python script from recorded steps."""
+        """Generate a Playwright Python script from recorded steps."""
         lines = [
-            "from selenium import webdriver",
-            "from selenium.webdriver.common.by import By",
-            "from selenium.webdriver.common.keys import Keys",
+            "from playwright.sync_api import sync_playwright",
             "",
-            "options = webdriver.ChromeOptions()",
-            "options.add_argument('--start-maximized')",
-            "driver = webdriver.Chrome(options=options)",
-            f"driver.get('{self.website_url}')",
+            "with sync_playwright() as p:",
+            "    browser = p.chromium.launch(headless=False)",
+            "    context = browser.new_context()",
+            "    page = context.new_page()",
+            f"    page.goto('{self.website_url}')",
             "",
         ]
 
@@ -206,19 +283,46 @@ class RecordingSession:
             selector = self._escape(step["selector"])
             value = self._escape(step.get("value", ""))
 
-            lines.append(f"element = driver.find_element(By.CSS_SELECTOR, \"{selector}\")")
-            if step["action"] == "click":
-                lines.append("element.click()")
+            # Add wait if significant wait time detected
+            wait_time = step.get("wait_time", 0)
+            if wait_time > 1.0:
+                lines.append(f"    page.wait_for_timeout({int(wait_time * 1000)})  # Wait {wait_time:.1f}s")
+            
+            if step["action"] == "navigate":
+                lines.append(f"    page.goto(\"{selector}\")")
+                lines.append("    page.wait_for_load_state('networkidle')")
+            elif step["action"] == "click":
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append("    element.click()")
+                if wait_time > 0.5:
+                    lines.append("    page.wait_for_load_state('networkidle')")
             elif step["action"] == "type":
-                lines.append("element.clear()")
-                lines.append(f"element.send_keys(\"{value}\")")
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append(f"    element.fill(\"{value}\")")
+            elif step["action"] == "select":
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append(f"    element.select_option(\"{value}\")")
+            elif step["action"] == "check":
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append("    element.check()")
+            elif step["action"] == "uncheck":
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append("    element.uncheck()")
             elif step["action"] == "submit":
-                lines.append("element.submit()")
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append("    element.press('Enter')")
             elif step["action"] == "press_enter":
-                lines.append("element.send_keys(Keys.ENTER)")
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append("    element.press('Enter')")
+            elif step["action"] == "focus":
+                lines.append(f"    element = page.locator(\"{selector}\").first")
+                lines.append("    element.focus()")
             lines.append("")
 
-        lines.append("driver.quit()")
+        lines.extend([
+            "    browser.close()",
+            ""
+        ])
         return "\n".join(lines)
 
     @staticmethod

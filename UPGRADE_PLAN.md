@@ -13,7 +13,7 @@
 - Store steps in a structured format (action, locator, value, assertions, waits).
 - Frontend additions:
   - Start/stop recording buttons, live step list, editable fields, reorder/delete options.
-  - Code preview (Python/Selenium) with copy/download.
+  - Code preview (Python/Playwright) with copy/download.
 - Persist recordings as reusable test cases that hook into the existing executor.
 
 #### 2. API Testing Module
@@ -52,6 +52,8 @@
 3. Expand UI generation heuristics.
 4. Upgrade executor robustness and artifact capture.
 5. Deliver run history UI and notification hooks.
+
+
 
 
 

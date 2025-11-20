@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from smart_test_engine import SmartTestEngine
 from test_executor import TestExecutor
-from recording_manager import RecordingManager
+from recording_manager import RecordingSession, RecordingManager
 from smart_api_engine import SmartApiEngine
 from api_test_executor import ApiTestExecutor
 from report_history import add_entry as log_history_entry, get_history as get_history_entries
@@ -17,6 +17,7 @@ recording_manager = RecordingManager()
 # Configuration
 app.config['UPLOAD_FOLDER'] = 'reports'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False  # Disable pretty printing for smaller responses
 
 # Ensure directories exist
 os.makedirs('reports', exist_ok=True)
@@ -24,6 +25,28 @@ os.makedirs('screenshots', exist_ok=True)
 os.makedirs('static/css', exist_ok=True)
 os.makedirs('static/js', exist_ok=True)
 os.makedirs('templates', exist_ok=True)
+
+# Global error handlers to ensure JSON responses
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found', 'status': 404}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error', 'status': 500}), 500
+
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({'error': 'Bad request', 'status': 400}), 400
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Ensure all exceptions return JSON instead of HTML"""
+    return jsonify({
+        'error': str(e),
+        'type': type(e).__name__,
+        'status': 500
+    }), 500
 
 @app.route('/')
 def index():
@@ -50,13 +73,15 @@ def generate_tests():
         # Generate all test cases
         result = engine.generate_all_tests()
         
-        # Save report
+        # Save reports (JSON + Excel)
         report_file = engine.save_report()
+        excel_report_file = engine.save_test_cases_excel()
         
         response_payload = {
             'success': True,
             'test_cases': result,
             'report_file': report_file,
+            'excel_report_file': excel_report_file,
             'summary': {
                 'total_tests': sum(len(tests) for tests in result.values()),
                 'positive': len(result.get('positive', [])),
@@ -173,7 +198,7 @@ def execute_tests():
         
         # Save execution reports (JSON + Excel/CSV)
         report_file = executor.save_execution_report(website_url)
-        excel_report_file = executor.save_execution_report_excel(website_url)
+        excel_report_file = executor.save_execution_report_excel(website_url, test_cases_data=test_cases)
         
         response_payload = {
             'success': True,
@@ -216,6 +241,7 @@ def generate_and_execute():
         engine = SmartTestEngine(website_url, login_id, password, headed=headed)
         test_cases = engine.generate_all_tests()
         generation_report = engine.save_report()
+        generation_excel_report = engine.save_test_cases_excel()
         generation_summary = {
             'total_tests': sum(len(tests) for tests in test_cases.values()),
             'positive': len(test_cases.get('positive', [])),
@@ -227,7 +253,8 @@ def generate_and_execute():
             'type': 'ui_generation',
             'website_url': website_url,
             'summary': generation_summary,
-            'report_file': generation_report
+            'report_file': generation_report,
+            'excel_report_file': generation_excel_report
         })
         engine.close()
         engine = None
@@ -236,7 +263,7 @@ def generate_and_execute():
         executor = TestExecutor(website_url, login_id, password, headed=headed)
         execution_results = executor.execute_all_tests(test_cases)
         execution_report = executor.save_execution_report(website_url)
-        execution_excel_report = executor.save_execution_report_excel(website_url)
+        execution_excel_report = executor.save_execution_report_excel(website_url, test_cases_data=test_cases)
         log_history_entry({
             'type': 'ui_execution',
             'website_url': website_url,
@@ -257,6 +284,7 @@ def generate_and_execute():
             },
             'reports': {
                 'generation_report': generation_report,
+                'generation_excel_report': generation_excel_report,
                 'execution_report': execution_report,
                 'execution_excel_report': execution_excel_report
             }
@@ -340,10 +368,58 @@ def execute_api_tests():
 def get_run_history():
     """Return recent generation/execution activity."""
     try:
-        history = get_history_entries()
+        limit = request.args.get('limit', 50, type=int)
+        history = get_history_entries(limit=limit)
         return jsonify({
             'success': True,
             'history': history
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analytics', methods=['GET'])
+def get_analytics():
+    """Return analytics data for dashboard"""
+    try:
+        history = get_history_entries(limit=200)
+        
+        # Calculate analytics
+        total_runs = len(history)
+        total_tests = 0
+        pass_rates = []
+        
+        for entry in history:
+            summary = entry.get('summary', {})
+            if summary:
+                total = summary.get('total_tests', 0)
+                passed = summary.get('passed', 0)
+                total_tests += total
+                if total > 0:
+                    pass_rates.append((passed / total) * 100)
+        
+        avg_pass_rate = sum(pass_rates) / len(pass_rates) if pass_rates else 0
+        
+        # Category breakdown
+        categories = {'ui_generation': 0, 'ui_execution': 0, 'api_generation': 0, 'api_execution': 0, 'recording_session': 0}
+        for entry in history:
+            entry_type = entry.get('type', '')
+            if entry_type in categories:
+                categories[entry_type] += 1
+        
+        analytics = {
+            'total_runs': total_runs,
+            'average_pass_rate': round(avg_pass_rate, 2),
+            'total_tests_executed': total_tests,
+            'category_breakdown': categories,
+            'trends': {
+                'last_7_days': len([h for h in history[:7] if h.get('timestamp')]),
+                'last_30_days': len([h for h in history[:30] if h.get('timestamp')])
+            }
+        }
+        
+        return jsonify({
+            'success': True,
+            'analytics': analytics
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -10,15 +10,14 @@ A professional, intelligent test automation platform that automatically generate
 - **Beautiful UI**: Modern, responsive design with Mobilise branding
 - **Test Reports**: Export comprehensive test reports in JSON format
 - **Real-time Analysis**: Analyze website structure before generating tests
-- **Manual Recording**: Record real browser sessions and generate editable Selenium scripts
+- **Manual Recording**: Record real browser sessions and generate editable Playwright scripts
 - **API Testing Lab**: Import OpenAPI/Swagger specs to auto-generate and execute API suites
 - **Run History**: Built-in activity feed to review recent generations/executions across UI and API suites
 
 ## 📋 Requirements
 
 - Python 3.8+
-- Chrome Browser
-- ChromeDriver (automatically managed)
+- Playwright (browsers are automatically installed)
 
 ## 🛠️ Installation
 
@@ -27,12 +26,21 @@ A professional, intelligent test automation platform that automatically generate
 pip install -r requirements.txt
 ```
 
-2. **Run the application:**
+2. **Install Playwright browsers:**
+```bash
+playwright install chromium
+```
+Or for all browsers:
+```bash
+playwright install
+```
+
+3. **Run the application:**
 ```bash
 python app.py
 ```
 
-3. **Access the tool:**
+4. **Access the tool:**
 Open your browser and navigate to: `http://localhost:5000`
 
 ## 📖 Usage
@@ -52,7 +60,7 @@ Open your browser and navigate to: `http://localhost:5000`
 1. Enter the website URL in the main configuration card
 2. Click **Start Recording** to launch a headed Chrome window
 3. Perform the desired steps manually—every click, input, and submission is captured
-4. Click **Stop & Save** to convert the flow into an editable Selenium Python script
+4. Click **Stop & Save** to convert the flow into an editable Playwright Python script
 5. Copy or download the script, tweak as needed, and replay it through the executor
 
 ### API Testing Lab
@@ -113,7 +121,7 @@ mobilise-test-tool/
 
 ## 🔧 Configuration
 
-The tool automatically uses ChromeDriver from the cache directory. If not found, it will download automatically using webdriver-manager.
+The tool uses Playwright for browser automation. Playwright browsers are automatically managed and installed on first run.
 
 ## 📝 Example
 
